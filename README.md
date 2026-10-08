@@ -1,6 +1,5 @@
 # lab04
-
-A new Flutter project.
+CREDIT : CLAUDE.AI
 
 ## Getting Started
 
