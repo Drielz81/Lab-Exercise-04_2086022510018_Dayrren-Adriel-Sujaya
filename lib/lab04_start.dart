@@ -205,8 +205,20 @@ class Lab04App extends StatelessWidget {
 }
 
 // -----------------------------------------------------------------------------
-// The screen. Everything from here to the harness is yours to fix.
+// The screen. (Fixed version: one scroll view, constraints-driven sizes.)
 // -----------------------------------------------------------------------------
+
+/// Lebar minimum (dp) untuk layout "lebar" (grid). Sama dengan batas
+/// compact -> medium pada Material window size class.
+const double kTabletBreakpoint = 600;
+
+/// Tinggi satu baris teks pada skala font saat ini. Dipakai untuk menghitung
+/// tinggi kartu dari ISI-nya (skenario terburuk), bukan dari angka tebakan.
+double _lineHeight(BuildContext context, TextStyle? style) {
+  final fontSize = style?.fontSize ?? 14;
+  final height = style?.height ?? 1.5;
+  return MediaQuery.textScalerOf(context).scale(fontSize) * height;
+}
 
 class MenuScreen extends StatefulWidget {
   const MenuScreen({super.key, required this.items});
@@ -221,6 +233,13 @@ class _MenuScreenState extends State<MenuScreen> {
   String _query = '';
   String _category = kCategories.first;
   final Map<String, int> _qty = {};
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   List<MenuItem> get _visible => widget.items.where((item) {
         final matchesQuery =
@@ -254,63 +273,139 @@ class _MenuScreenState extends State<MenuScreen> {
     setState(() => _qty.clear());
   }
 
+  void _resetFilters() {
+    _searchController.clear();
+    setState(() {
+      _query = '';
+      _category = kCategories.first;
+    });
+  }
+
+  void _reload() {
+    // Minggu 7: panggil repository di sini.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Belum ada menu baru.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
     final promos = widget.items.where((item) => item.promo).toList();
-    final isTablet = MediaQuery.sizeOf(context).width > 600;
+    final hasItems = widget.items.isNotEmpty;
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Menu')),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const StoreHeader(),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: Gap.md),
-            child: SearchBar(
-              key: const Key('search-field'),
-              hintText: 'Cari menu…',
-              leading: const Icon(Icons.search),
-              onChanged: (value) => setState(() => _query = value),
-            ),
-          ),
-          const SizedBox(height: Gap.sm),
-          CategoryBar(
-            selected: _category,
-            onSelected: (category) => setState(() => _category = category),
-          ),
-          PromoStrip(first: promos[0], second: promos[1]),
-          Expanded(
-            child: isTablet
-                ? GridView.count(
-                    crossAxisCount: 4,
-                    padding: const EdgeInsets.all(Gap.md),
-                    mainAxisSpacing: Gap.md,
-                    crossAxisSpacing: Gap.md,
+      // Inset kiri/kanan (notch di landscape) dihormati di sini. Atas ditangani
+      // AppBar, bawah ditangani CartBar.
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        // Breakpoint dari ruang yang DIBERIKAN parent, bukan dari ukuran layar.
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= kTabletBreakpoint;
+
+            return CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      for (final item in visible)
-                        MenuCard(
-                          item: item,
-                          quantity: _qty[item.id] ?? 0,
-                          onAdd: () => _add(item),
+                      const StoreHeader(),
+                      if (hasItems) ...[
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: Gap.md),
+                          child: SearchBar(
+                            key: const Key('search-field'),
+                            controller: _searchController,
+                            hintText: 'Cari menu…',
+                            leading: const Icon(Icons.search),
+                            onChanged: (value) => setState(() => _query = value),
+                          ),
                         ),
-                    ],
-                  )
-                : ListView(
-                    children: [
-                      for (final item in visible)
-                        MenuTile(
-                          item: item,
-                          quantity: _qty[item.id] ?? 0,
-                          onAdd: () => _add(item),
+                        const SizedBox(height: Gap.sm),
+                        CategoryBar(
+                          selected: _category,
+                          onSelected: (category) =>
+                              setState(() => _category = category),
                         ),
+                        PromoStrip(items: promos),
+                      ],
                     ],
                   ),
-          ),
-        ],
+                ),
+                if (visible.isEmpty)
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: hasItems
+                        ? EmptyState(
+                            key: const Key('empty-state'),
+                            icon: Icons.search_off,
+                            title: 'Menu tidak ditemukan',
+                            message:
+                                'Tidak ada menu yang cocok dengan pencarian atau filter kamu.',
+                            actionLabel: 'Hapus filter',
+                            onAction: _resetFilters,
+                          )
+                        : EmptyState(
+                            key: const Key('empty-state'),
+                            icon: Icons.restaurant_menu,
+                            title: 'Menu belum tersedia',
+                            message:
+                                'Warung sedang menyiapkan menu. Coba lagi sebentar lagi.',
+                            actionLabel: 'Muat ulang',
+                            onAction: _reload,
+                          ),
+                  )
+                else if (wide)
+                  SliverPadding(
+                    padding: const EdgeInsets.all(Gap.md),
+                    sliver: SliverGrid.builder(
+                      // Jumlah kolom diturunkan dari lebar; tinggi sel dari isi kartu.
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 220,
+                        mainAxisSpacing: Gap.md,
+                        crossAxisSpacing: Gap.md,
+                        mainAxisExtent: MenuCard.heightFor(context),
+                      ),
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final item = visible[index];
+                        return MenuCard(
+                          key: ValueKey(item.id),
+                          item: item,
+                          quantity: _qty[item.id] ?? 0,
+                          onAdd: () => _add(item),
+                        );
+                      },
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.only(bottom: Gap.md),
+                    sliver: SliverList.builder(
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final item = visible[index];
+                        return MenuTile(
+                          key: ValueKey(item.id),
+                          item: item,
+                          quantity: _qty[item.id] ?? 0,
+                          onAdd: () => _add(item),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
-      bottomNavigationBar: CartBar(count: _count, total: _total, onOrder: _order),
+      // Saat keyboard terbuka, ruang lebih berharga daripada total pesanan.
+      bottomNavigationBar:
+          keyboardOpen ? null : CartBar(count: _count, total: _total, onOrder: _order),
     );
   }
 }
@@ -337,20 +432,41 @@ class StoreHeader extends StatelessWidget {
             child: Icon(Icons.storefront, color: cs.onPrimaryContainer),
           ),
           const SizedBox(width: Gap.md),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(kStoreName, style: text.titleMedium),
-              Text(
-                kStoreHours,
-                style: text.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-              ),
-            ],
+          // Teks mengambil SISA lebar; rating pindah ke baris sendiri.
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  kStoreName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.titleMedium,
+                ),
+                Text(
+                  kStoreHours,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                ),
+                const SizedBox(height: Gap.xs),
+                Row(
+                  children: [
+                    Icon(Icons.star_rounded, size: 20, color: cs.tertiary),
+                    const SizedBox(width: Gap.xs),
+                    Flexible(
+                      child: Text(
+                        '4.8 · 1,2 rb ulasan',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: text.labelMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          const SizedBox(width: Gap.md),
-          Icon(Icons.star_rounded, size: 20, color: cs.tertiary),
-          const SizedBox(width: Gap.xs),
-          Text('4.8 · 1,2 rb ulasan', style: text.labelMedium),
         ],
       ),
     );
@@ -365,18 +481,21 @@ class CategoryBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    // Jumlah chip tidak kita kontrol -> beri jalan keluar: scroll horizontal.
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: Gap.md),
       child: Row(
         children: [
-          for (final category in kCategories) ...[
-            ChoiceChip(
-              label: Text(category),
-              selected: category == selected,
-              onSelected: (_) => onSelected(category),
+          for (final category in kCategories)
+            Padding(
+              padding: const EdgeInsets.only(right: Gap.sm),
+              child: ChoiceChip(
+                label: Text(category),
+                selected: category == selected,
+                onSelected: (_) => onSelected(category),
+              ),
             ),
-            const SizedBox(width: Gap.sm),
-          ],
         ],
       ),
     );
@@ -384,21 +503,51 @@ class CategoryBar extends StatelessWidget {
 }
 
 class PromoStrip extends StatelessWidget {
-  const PromoStrip({super.key, required this.first, required this.second});
+  const PromoStrip({super.key, required this.items});
 
-  final MenuItem first;
-  final MenuItem second;
+  final List<MenuItem> items;
+
+  /// "PROMO HARI INI" dengan puluhan kartu itu spam. Keputusan desain.
+  static const int _maxCards = 5;
+
+  /// Batas lebar kartu di layar lebar. Keputusan desain, bukan ukuran konten.
+  static const double _maxCardWidth = 320;
 
   @override
   Widget build(BuildContext context) {
+    // Nol promo: tidak ada strip, tidak ada padding sisa, tidak crash.
+    if (items.isEmpty) return const SizedBox.shrink();
+
+    final shown = items.take(_maxCards).toList();
+
     return Padding(
-      padding: const EdgeInsets.all(Gap.md),
-      child: Row(
-        children: [
-          PromoCard(item: first),
-          const SizedBox(width: Gap.md),
-          PromoCard(item: second),
-        ],
+      padding: const EdgeInsets.symmetric(vertical: Gap.md),
+      child: SizedBox(
+        // Tinggi horizontal list harus datang dari luar; kartu yang
+        // menghitungnya dari isi + skala font.
+        height: PromoCard.heightFor(context),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final available = constraints.maxWidth - Gap.md * 2;
+            // Kartu berikutnya mengintip di tepi sebagai petunjuk "bisa digeser".
+            final target = shown.length == 1 ? available : available * 0.8;
+            final cardWidth = target.clamp(0.0, _maxCardWidth).toDouble();
+
+            return ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: Gap.md),
+              itemCount: shown.length,
+              separatorBuilder: (_, __) => const SizedBox(width: Gap.md),
+              itemBuilder: (context, index) => SizedBox(
+                width: cardWidth,
+                child: PromoCard(
+                  key: ValueKey(shown[index].id),
+                  item: shown[index],
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -409,44 +558,70 @@ class PromoCard extends StatelessWidget {
 
   final MenuItem item;
 
+  static const int _nameLines = 2;
+
+  /// Cadangan untuk pembulatan tinggi baris.
+  static const double _slack = 4;
+
+  /// Tinggi kartu = skenario terburuk (nama penuh 2 baris), ikut skala font.
+  static double heightFor(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Gap.md * 2 +
+        _lineHeight(context, text.labelSmall) +
+        Gap.xs +
+        _lineHeight(context, text.titleMedium) * _nameLines +
+        Gap.sm +
+        _lineHeight(context, text.titleSmall) +
+        _slack;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
 
-    return SizedBox(
-      width: 200,
-      height: 150,
-      child: Card(
-        margin: EdgeInsets.zero,
-        color: cs.tertiaryContainer,
-        child: Padding(
-          padding: const EdgeInsets.all(Gap.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'PROMO HARI INI',
-                style: text.labelSmall?.copyWith(
-                  color: cs.onTertiaryContainer,
-                  letterSpacing: 1.2,
-                ),
+    // Tidak ada width/height di sini: ukuran datang dari parent.
+    return Card(
+      margin: EdgeInsets.zero,
+      color: cs.tertiaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(Gap.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'PROMO HARI INI',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: text.labelSmall?.copyWith(
+                color: cs.onTertiaryContainer,
+                letterSpacing: 1.2,
               ),
-              const SizedBox(height: Gap.xs),
-              Text(
+            ),
+            const SizedBox(height: Gap.xs),
+            // Pengganti Spacer: nama mengisi sisa ruang, harga tetap di bawah.
+            Expanded(
+              child: Text(
                 item.name,
+                maxLines: _nameLines,
+                overflow: TextOverflow.ellipsis,
                 style: text.titleMedium?.copyWith(color: cs.onTertiaryContainer),
               ),
-              const Spacer(),
-              Text(
+            ),
+            const SizedBox(height: Gap.sm),
+            // Harga tidak boleh dipotong; kalau sempit, mengecil.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
                 rupiah(item.price),
                 style: text.titleSmall?.copyWith(
                   color: cs.onTertiaryContainer,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -482,16 +657,33 @@ class MenuTile extends StatelessWidget {
               child: Icon(iconFor(item.category), color: cs.onSecondaryContainer),
             ),
             const SizedBox(width: Gap.md),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(item.name, style: text.titleMedium),
-                if (item.promo)
-                  Text('Promo', style: text.labelSmall?.copyWith(color: cs.primary)),
-              ],
+            // Hanya avatar dan tombol yang berukuran tetap; teks dapat sisanya.
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.titleMedium,
+                  ),
+                  // Harga di bawah nama; Wrap turun baris kalau label Promo tak muat.
+                  Wrap(
+                    spacing: Gap.sm,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(rupiah(item.price), style: text.labelLarge),
+                      if (item.promo)
+                        Text(
+                          'Promo',
+                          style: text.labelSmall?.copyWith(color: cs.primary),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            const Spacer(),
-            Text(rupiah(item.price), style: text.labelLarge),
             IconButton(
               tooltip: 'Tambah',
               onPressed: onAdd,
@@ -520,19 +712,40 @@ class MenuCard extends StatelessWidget {
   final int quantity;
   final VoidCallback onAdd;
 
+  static const double _imageHeight = 96;
+  static const int _nameLines = 2;
+  static const double _slack = 4;
+
+  /// Tinggi sel grid = isi kartu skenario terburuk, ikut skala font.
+  static double heightFor(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Gap.md * 2 +
+        _imageHeight +
+        Gap.sm +
+        _lineHeight(context, text.titleSmall) * _nameLines +
+        Gap.xs +
+        _lineHeight(context, text.bodyMedium) +
+        Gap.sm +
+        kMinInteractiveDimension +
+        _slack;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
 
+    // margin: zero -> jarak antar sel sepenuhnya diatur grid, dan heightFor akurat.
     return Card(
+      margin: EdgeInsets.zero,
       child: Padding(
         padding: const EdgeInsets.all(Gap.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              height: 110,
+              height: _imageHeight, // blok dekoratif, bukan wadah teks
+              width: double.infinity,
               decoration: BoxDecoration(
                 color: cs.secondaryContainer,
                 borderRadius: BorderRadius.circular(12),
@@ -545,17 +758,82 @@ class MenuCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: Gap.sm),
-            Text(item.name, style: text.titleSmall),
-            const SizedBox(height: Gap.xs),
-            Text(rupiah(item.price), style: text.bodyMedium),
+            // Area teks menyerap sisa tinggi sel, jadi tombol selalu sejajar.
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.name,
+                    maxLines: _nameLines,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.titleSmall,
+                  ),
+                  const SizedBox(height: Gap.xs),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(rupiah(item.price), style: text.bodyMedium),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: Gap.sm),
             SizedBox(
               width: double.infinity,
               child: FilledButton.tonal(
                 onPressed: onAdd,
-                child: Text(quantity > 0 ? 'Tambah ($quantity)' : 'Tambah'),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(quantity > 0 ? 'Tambah ($quantity)' : 'Tambah'),
+                ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class EmptyState extends StatelessWidget {
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.message,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(Gap.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 56, color: cs.onSurfaceVariant),
+            const SizedBox(height: Gap.md),
+            Text(title, textAlign: TextAlign.center, style: text.titleMedium),
+            const SizedBox(height: Gap.xs),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: text.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: Gap.md),
+            FilledButton.tonal(onPressed: onAction, child: Text(actionLabel)),
           ],
         ),
       ),
@@ -580,28 +858,47 @@ class CartBar extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
 
-    return Container(
-      height: 72,
-      padding: const EdgeInsets.symmetric(horizontal: Gap.md),
+    // Warna latar di LUAR SafeArea: latar menutupi zona gesture bar,
+    // tapi konten dan tombol tidak masuk ke sana.
+    return Material(
       color: cs.surfaceContainerHigh,
-      child: Row(
-        children: [
-          Icon(Icons.shopping_bag_outlined, color: cs.onSurfaceVariant),
-          const SizedBox(width: Gap.sm),
-          Text(
-            'Pesanan: $count item · Total ${rupiah(total)}',
-            style: text.titleSmall,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: Gap.md, vertical: Gap.sm),
+          child: Row(
+            children: [
+              Icon(Icons.shopping_bag_outlined, color: cs.onSurfaceVariant),
+              const SizedBox(width: Gap.sm),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Pesanan: $count item',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: text.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                    ),
+                    // Total tidak boleh dipotong; kalau sempit, mengecil.
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text('Total ${rupiah(total)}', style: text.titleSmall),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: Gap.md),
+              FilledButton(
+                key: const Key('order-button'),
+                onPressed: count == 0 ? null : onOrder,
+                child: const Text('Pesan'),
+              ),
+            ],
           ),
-          const SizedBox(width: Gap.md),
-          SizedBox(
-            width: 160,
-            child: FilledButton(
-              key: const Key('order-button'),
-              onPressed: count == 0 ? null : onOrder,
-              child: const Text('Pesan'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
